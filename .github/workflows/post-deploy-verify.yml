@@ -22,6 +22,17 @@ on:
         description: '部署备注'
         required: false
         type: string
+      test_suite:
+        description: '测试套件 (bazi trigger-post-deploy path filter 自动决定)'
+        required: false
+        type: choice
+        default: 'core'
+        options:
+          - core        # 5 项核心 (health/plugins/frontend/login/paipan)
+          - worker      # + 神机追问 (改 app/worker/*.py 时)
+          - knowledge   # + 向量库检查 (改 app/knowledge/ 时)
+          - api         # + 3 大按钮 (改 app/api/ 时)
+          - frontend    # + Lighthouse (改 frontend/ 时)
 
 permissions:
   issues: write
@@ -35,7 +46,7 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Init results
@@ -119,6 +130,7 @@ jobs:
           fi
 
       - name: Check 5 — E2E Paipan (P1)
+        id: paipan
         continue-on-error: true
         run: |
           echo "▸ Check 5: E2E Paipan..."
@@ -152,9 +164,70 @@ jobs:
           done
           if [ "$FINAL" = "completed" ]; then
             echo "✅ PASS — paipan: completed ($((i*5))s)" | tee -a /tmp/results.md
+            echo "task_id=$TASK_ID" >> $GITHUB_OUTPUT
           else
             echo "❌ FAIL — paipan: $FINAL (120s 内未 completed — 查 Worker crash/内存)" | tee -a /tmp/results.md
             echo "paipan" >> /tmp/fails.txt
+          fi
+
+      # ============================================================================
+      # 955 G24: path filter 业务测试 (按 test_suite 条件触发, 内联 curl 不用 .sh)
+      # 设计依据: 用户反馈 "业务代码一变, sh 文件就失效", 改用 YAML 内联
+      # ============================================================================
+
+      - name: Check 6 — 神机追问 (if test_suite=worker|knowledge)
+        id: shenji
+        if: inputs.test_suite == 'worker' || inputs.test_suite == 'knowledge'
+        continue-on-error: true
+        run: |
+          echo "▸ Check 6: 神机追问 (test_suite=${{ inputs.test_suite }})..."
+          TOKEN="${{ steps.login.outputs.token }}"
+          TASK_ID="${{ steps.paipan.outputs.task_id }}"
+          if [ -z "$TOKEN" ] || [ -z "$TASK_ID" ]; then
+            echo "⏭️ SKIP — login 或 paipan 未通过, 无法测神机追问" | tee -a /tmp/results.md
+            exit 0
+          fi
+          # 取第一个 plugin (神机/铁口/金断/玄鉴 之一)
+          PLUGINS_RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugins" 2>/dev/null || echo "[]")
+          PLUGIN_ID=$(echo "$PLUGINS_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null || echo "")
+          if [ -z "$PLUGIN_ID" ]; then
+            echo "❌ FAIL — shenji: no plugin available" | tee -a /tmp/results.md
+            echo "shenji" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  Using plugin: $PLUGIN_ID, task: $TASK_ID"
+          # 调用神机追问 (POST /api/v1/bazi/plugin/{plugin_id})
+          RESP=$(curl -sf --max-time 60 -X POST "${{ env.PROD_URL }}/api/v1/bazi/plugin/$PLUGIN_ID" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"task_id\":\"$TASK_ID\",\"message\":\"这个人的事业运怎么样?\"}" 2>&1 || echo "CURL_FAILED")
+          echo "  Response: $(echo "$RESP" | head -c 200)"
+          # 检查是否有实质回答 (含中文或 task_id)
+          if echo "$RESP" | grep -qE '[\xe4-\xe9][\x80-\xbf]{2}' || echo "$RESP" | grep -q "task_id"; then
+            echo "✅ PASS — shenji: 有实质回答" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — shenji: 无实质回答 ($RESP)" | tee -a /tmp/results.md
+            echo "shenji" >> /tmp/fails.txt
+          fi
+
+      - name: Check 7 — 中医库 (if test_suite=worker)
+        if: inputs.test_suite == 'worker'
+        continue-on-error: true
+        run: |
+          echo "▸ Check 7: 中医库 (test_suite=worker)..."
+          # 中医库是 14 plugins 之一, 检查 plugins 列表中是否有中医相关
+          RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugins" 2>/dev/null || echo "[]")
+          TCM_FOUND=$(echo "$RESP" | python3 -c "
+          import sys, json
+          plugins = json.load(sys.stdin)
+          tcm = [p for p in plugins if '中医' in p.get('name','') or 'tcm' in p.get('id','').lower() or '药' in p.get('name','')]
+          print('yes' if tcm else 'no')
+          " 2>/dev/null || echo "err")
+          if [ "$TCM_FOUND" = "yes" ]; then
+            echo "✅ PASS — tcm: 中医库 plugin 存在" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — tcm: 中医库 plugin 未找到 ($TCM_FOUND)" | tee -a /tmp/results.md
+            echo "tcm" >> /tmp/fails.txt
           fi
 
       - name: Aggregate fails
