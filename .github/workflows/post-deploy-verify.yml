@@ -2,23 +2,24 @@ name: Post-Deploy Verify
 
 # ============================================================================
 # 位置: clawang2433-commits/issues (PUBLIC repo, GitHub Actions 无限免费)
-# 用途: Leo 部署 bazi 后手动触发, 自动验证线上健康, 失败自动开 Issue
-# 为什么放这里: public repo 无限免费, private repo (bazi) 只有 2000 分钟/月
-# 驱动协作: 失败 → 自动开 Issue (bug + P0/P1 + deploy-failed) → Trae 用
-#           bash scripts/agent-inbox.sh trae 查到 → 进场修复
-# 触发: workflow_dispatch (Leo 在 issues repo Actions tab 点 "Run workflow")
-#       或 gh workflow run post-deploy-verify.yml --repo clawang2433-commits/issues
+# 触发方式:
+#   1. 自动 (推荐): bazi repo push main → trigger-post-deploy.yml → workflow_dispatch API → 这里
+#      Leo 部署后不需要手动触发, bazi main 更新就自动跑
+#      需要 bazi repo 配置 ISSUES_REPO_PAT secret (Fine-grained PAT, Actions:write on issues repo)
+#   2. 手动 (备用): gh workflow run post-deploy-verify.yml --repo clawang2433-commits/issues
+# 驱动协作: 失败 → 自动开 Issue (bug + P0/P1 + deploy-failed) → Trae 进场修复
 # ============================================================================
 
 on:
+  # 方式 1: 手动触发 (备用)
   workflow_dispatch:
     inputs:
       pr_number:
-        description: '刚部署的 bazi PR # (填了会在 Issue 里关联)'
+        description: '刚部署的 bazi PR #'
         required: false
         type: string
       deploy_note:
-        description: '部署备注 (如: PR#84+#85 反复 bug 根治)'
+        description: '部署备注'
         required: false
         type: string
 
@@ -39,16 +40,26 @@ jobs:
     steps:
       - name: Init results
         run: |
+          # inputs 来自 workflow_dispatch (手动或 API 触发)
+          PR_NUMBER="${{ inputs.pr_number }}"
+          DEPLOY_NOTE="${{ inputs.deploy_note }}"
+          SOURCE_COMMIT="${{ github.sha }}"
+
+
           echo "## Post-Deploy Verify Results" > /tmp/results.md
           echo "" >> /tmp/results.md
           echo "- **Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> /tmp/results.md
-          echo "- **bazi PR**: ${{ inputs.pr_number || 'N/A' }}" >> /tmp/results.md
-          echo "- **Note**: ${{ inputs.deploy_note || 'N/A' }}" >> /tmp/results.md
-          echo "- **Triggered by**: ${{ github.actor }}" >> /tmp/results.md
+          echo "- **bazi PR**: ${PR_NUMBER:-N/A}" >> /tmp/results.md
+          echo "- **Note**: ${DEPLOY_NOTE:-N/A}" >> /tmp/results.md
+          echo "- **Source commit**: ${SOURCE_COMMIT:-N/A}" >> /tmp/results.md
+          echo "- **Trigger**: ${{ github.event_name }} by ${{ github.actor }}" >> /tmp/results.md
           echo "" >> /tmp/results.md
           echo "### Checks" >> /tmp/results.md
           echo "" >> /tmp/results.md
           : > /tmp/fails.txt
+          # 保存 PR_NUMBER 供后续 step 用
+          echo "PR_NUMBER=${PR_NUMBER:-N/A}" >> $GITHUB_ENV
+          echo "DEPLOY_NOTE=${DEPLOY_NOTE:-N/A}" >> $GITHUB_ENV
 
       - name: Check 1 — Health (P0)
         continue-on-error: true
@@ -167,8 +178,8 @@ jobs:
             const results = fs.readFileSync('/tmp/results.md', 'utf8');
             const fails = process.env.ALL_FAILS.trim();
             const priority = process.env.PRIORITY;
-            const prNumber = '${{ inputs.pr_number }}' || 'N/A';
-            const deployNote = '${{ inputs.deploy_note }}' || 'N/A';
+            const prNumber = process.env.PR_NUMBER || 'N/A';
+            const deployNote = process.env.DEPLOY_NOTE || 'N/A';
             const date = new Date().toISOString().slice(0,19).replace('T',' ');
             const title = `[Post-Deploy Verify] ${priority} FAILED — ${date} — ${fails}`;
             const body = `## 🚨 bazi 线上部署验收失败
@@ -181,8 +192,9 @@ jobs:
             @trae 请进场修复, 步骤:
             1. 读 [V10.8_Bug修复经验_DS.md](https://github.com/clawang2433-commits/bazi/blob/main/docs/specs/2026-07-11_v10.8_specs/V10.8_Bug修复经验_DS.md) 找类似 bug
             2. 读 [Deploy.md 已知坑清单](https://github.com/clawang2433-commits/bazi/blob/main/docs/deployment/Deploy.md) 对照症状
-            3. 本地复现 → 修复 → pytest 过 → 开 PR (bazi repo) → awaiting-review label
-            4. CW=DS review + merge → Leo 重新部署 → 重新触发本 Action 验证
+            3. 本地复现 → 修复 → pytest 过 → 开 PR (bazi repo)
+            4. 开 PR 后 GitHub Action 会自动通知 @codewhale review (auto-trigger-review.yml)
+            5. CW=DS review + merge → Leo 再部署 → 验收自动跑 (bazi push main → repository_dispatch)
 
             ## 失败项分析
 
@@ -202,7 +214,7 @@ jobs:
             ---
             - **bazi PR deployed**: #${prNumber}
             - **Deploy note**: ${deployNote}
-            - **Triggered by**: ${{ github.actor }}
+            - **Triggered by**: ${{ github.actor }} via ${{ github.event_name }}
             - **Workflow run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             `;
             const issue = await github.rest.issues.create({
