@@ -8,10 +8,21 @@ name: Post-Deploy Verify
 #      需要 bazi repo 配置 ISSUES_REPO_PAT secret (Fine-grained PAT, Actions:write on issues repo)
 #   2. 手动 (备用): gh workflow run post-deploy-verify.yml --repo clawang2433-commits/issues
 # 驱动协作: 失败 → 自动开 Issue (bug + P0/P1 + deploy-failed) → Trae 进场修复
+#
+# 10 项全自动验收 (2026-07-18 V2, 全部内联 YAML curl, 不用 .sh):
+#   1. Health (P0)
+#   2. 14 Plugins (P1)
+#   3. Frontend (P0)
+#   4. Login (P0)
+#   5. 3 大按钮之单人轻量 (P1) — mode=lightweight
+#   6. 3 大按钮之单人全量 (P0) — mode=full + Phase1/2 字数 + 排版检查
+#   7. 3 大按钮之双人合盘 (P0) — synastry/analyze
+#   8. 神机追问 (P1) — plugin/career + 户口本 has_data
+#   9. 中医库 (P1) — plugin/health + 古籍关键词 (RAG 起作用)
+#  10. 历史记录 Phase1/2 产出 (P0) — report 字数 + 无乱码
 # ============================================================================
 
 on:
-  # 方式 1: 手动触发 (备用)
   workflow_dispatch:
     inputs:
       pr_number:
@@ -23,16 +34,16 @@ on:
         required: false
         type: string
       test_suite:
-        description: '测试套件 (bazi trigger-post-deploy path filter 自动决定)'
+        description: '测试套件 (path filter 决定, 默认 core)'
         required: false
         type: choice
         default: 'core'
         options:
-          - core        # 5 项核心 (health/plugins/frontend/login/paipan)
-          - worker      # + 神机追问 (改 app/worker/*.py 时)
-          - knowledge   # + 向量库检查 (改 app/knowledge/ 时)
-          - api         # + 3 大按钮 (改 app/api/ 时)
-          - frontend    # + Lighthouse (改 frontend/ 时)
+          - core
+          - worker
+          - knowledge
+          - api
+          - frontend
 
 permissions:
   issues: write
@@ -46,32 +57,35 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Init results
         run: |
-          # inputs 来自 workflow_dispatch (手动或 API 触发)
           PR_NUMBER="${{ inputs.pr_number }}"
           DEPLOY_NOTE="${{ inputs.deploy_note }}"
+          TEST_SUITE="${{ inputs.test_suite || 'core' }}"
           SOURCE_COMMIT="${{ github.sha }}"
 
-
-          echo "## Post-Deploy Verify Results" > /tmp/results.md
+          echo "## Post-Deploy Verify Results (V2 — 10 项全自动)" > /tmp/results.md
           echo "" >> /tmp/results.md
           echo "- **Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> /tmp/results.md
           echo "- **bazi PR**: ${PR_NUMBER:-N/A}" >> /tmp/results.md
           echo "- **Note**: ${DEPLOY_NOTE:-N/A}" >> /tmp/results.md
+          echo "- **test_suite**: ${TEST_SUITE}" >> /tmp/results.md
           echo "- **Source commit**: ${SOURCE_COMMIT:-N/A}" >> /tmp/results.md
           echo "- **Trigger**: ${{ github.event_name }} by ${{ github.actor }}" >> /tmp/results.md
           echo "" >> /tmp/results.md
           echo "### Checks" >> /tmp/results.md
           echo "" >> /tmp/results.md
           : > /tmp/fails.txt
-          # 保存 PR_NUMBER 供后续 step 用
           echo "PR_NUMBER=${PR_NUMBER:-N/A}" >> $GITHUB_ENV
           echo "DEPLOY_NOTE=${DEPLOY_NOTE:-N/A}" >> $GITHUB_ENV
+          echo "TEST_SUITE=${TEST_SUITE}" >> $GITHUB_ENV
 
+      # ============================================================
+      # Check 1: Health (P0)
+      # ============================================================
       - name: Check 1 — Health (P0)
         continue-on-error: true
         run: |
@@ -85,6 +99,9 @@ jobs:
             echo "health" >> /tmp/fails.txt
           fi
 
+      # ============================================================
+      # Check 2: 14 Plugins (P1)
+      # ============================================================
       - name: Check 2 — 14 Plugins (P1)
         continue-on-error: true
         run: |
@@ -99,6 +116,9 @@ jobs:
             echo "plugins" >> /tmp/fails.txt
           fi
 
+      # ============================================================
+      # Check 3: Frontend (P0)
+      # ============================================================
       - name: Check 3 — Frontend (P0)
         continue-on-error: true
         run: |
@@ -112,6 +132,9 @@ jobs:
             echo "frontend" >> /tmp/fails.txt
           fi
 
+      # ============================================================
+      # Check 4: Login (P0) — 获取 token, 后续 check 复用
+      # ============================================================
       - name: Check 4 — Login (P0)
         id: login
         continue-on-error: true
@@ -129,24 +152,27 @@ jobs:
             echo "login" >> /tmp/fails.txt
           fi
 
-      - name: Check 5 — E2E Paipan (P1)
-        id: paipan
+      # ============================================================
+      # Check 5: 3 大按钮之单人轻量 (P1) — mode=lightweight
+      # ============================================================
+      - name: Check 5 — 单人轻量 (P1)
+        id: lightweight
         continue-on-error: true
         run: |
-          echo "▸ Check 5: E2E Paipan..."
+          echo "▸ Check 5: 3 大按钮之单人轻量 (mode=lightweight)..."
           TOKEN="${{ steps.login.outputs.token }}"
           if [ -z "$TOKEN" ]; then
-            echo "⏭️ SKIP — login failed, can't test paipan" | tee -a /tmp/results.md
+            echo "⏭️ SKIP — login failed" | tee -a /tmp/results.md
             exit 0
           fi
           RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/bazi/analyze" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"name":"deploy-verify","gender":"男","birth_time":"1990-01-01 12:00","location":"北京","mode":"lightweight"}' 2>&1 || echo "CURL_FAILED")
+            -d '{"name":"deploy-verify-light","gender":"男","birth_time":"1990-01-01 12:00","location":"北京","mode":"lightweight"}' 2>&1 || echo "CURL_FAILED")
           TASK_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
           if [ -z "$TASK_ID" ]; then
-            echo "❌ FAIL — paipan submit: no task_id ($RESP)" | tee -a /tmp/results.md
-            echo "paipan" >> /tmp/fails.txt
+            echo "❌ FAIL — lightweight submit: no task_id ($RESP)" | tee -a /tmp/results.md
+            echo "lightweight" >> /tmp/fails.txt
             exit 0
           fi
           echo "  task_id: $TASK_ID"
@@ -163,80 +189,290 @@ jobs:
             fi
           done
           if [ "$FINAL" = "completed" ]; then
-            echo "✅ PASS — paipan: completed ($((i*5))s)" | tee -a /tmp/results.md
-            echo "task_id=$TASK_ID" >> $GITHUB_OUTPUT
+            echo "✅ PASS — lightweight: completed ($((i*5))s)" | tee -a /tmp/results.md
+            echo "lightweight_task_id=$TASK_ID" >> $GITHUB_OUTPUT
           else
-            echo "❌ FAIL — paipan: $FINAL (120s 内未 completed — 查 Worker crash/内存)" | tee -a /tmp/results.md
-            echo "paipan" >> /tmp/fails.txt
+            echo "❌ FAIL — lightweight: $FINAL (120s 内未 completed)" | tee -a /tmp/results.md
+            echo "lightweight" >> /tmp/fails.txt
           fi
 
-      # ============================================================================
-      # 955 G24: path filter 业务测试 (按 test_suite 条件触发, 内联 curl 不用 .sh)
-      # 设计依据: 用户反馈 "业务代码一变, sh 文件就失效", 改用 YAML 内联
-      # ============================================================================
-
-      - name: Check 6 — 神机追问 (if test_suite=worker|knowledge)
-        id: shenji
-        if: inputs.test_suite == 'worker' || inputs.test_suite == 'knowledge'
+      # ============================================================
+      # Check 6: 3 大按钮之单人全量 (P0) — mode=full + Phase1/2 字数 + 排版
+      # ============================================================
+      - name: Check 6 — 单人全量 + Phase1/2 字数/排版 (P0)
+        id: fullmode
         continue-on-error: true
         run: |
-          echo "▸ Check 6: 神机追问 (test_suite=${{ inputs.test_suite }})..."
+          echo "▸ Check 6: 3 大按钮之单人全量 (mode=full) + Phase1/2 产出..."
           TOKEN="${{ steps.login.outputs.token }}"
-          TASK_ID="${{ steps.paipan.outputs.task_id }}"
-          if [ -z "$TOKEN" ] || [ -z "$TASK_ID" ]; then
-            echo "⏭️ SKIP — login 或 paipan 未通过, 无法测神机追问" | tee -a /tmp/results.md
+          if [ -z "$TOKEN" ]; then
+            echo "⏭️ SKIP — login failed" | tee -a /tmp/results.md
             exit 0
           fi
-          # 取第一个 plugin (神机/铁口/金断/玄鉴 之一)
-          PLUGINS_RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugins" 2>/dev/null || echo "[]")
-          PLUGIN_ID=$(echo "$PLUGINS_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null || echo "")
-          if [ -z "$PLUGIN_ID" ]; then
-            echo "❌ FAIL — shenji: no plugin available" | tee -a /tmp/results.md
-            echo "shenji" >> /tmp/fails.txt
-            exit 0
-          fi
-          echo "  Using plugin: $PLUGIN_ID, task: $TASK_ID"
-          # 调用神机追问 (POST /api/v1/bazi/plugin/{plugin_id})
-          RESP=$(curl -sf --max-time 60 -X POST "${{ env.PROD_URL }}/api/v1/bazi/plugin/$PLUGIN_ID" \
+          RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/bazi/analyze" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"task_id\":\"$TASK_ID\",\"message\":\"这个人的事业运怎么样?\"}" 2>&1 || echo "CURL_FAILED")
-          echo "  Response: $(echo "$RESP" | head -c 200)"
-          # 检查是否有实质回答 (含中文或 task_id)
-          if echo "$RESP" | grep -qE '[\xe4-\xe9][\x80-\xbf]{2}' || echo "$RESP" | grep -q "task_id"; then
-            echo "✅ PASS — shenji: 有实质回答" | tee -a /tmp/results.md
+            -d '{"name":"deploy-verify-full","gender":"男","birth_time":"1985-05-15 08:30","location":"上海","mode":"full"}' 2>&1 || echo "CURL_FAILED")
+          TASK_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
+          if [ -z "$TASK_ID" ]; then
+            echo "❌ FAIL — full submit: no task_id ($RESP)" | tee -a /tmp/results.md
+            echo "fullmode" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  task_id: $TASK_ID"
+          FINAL=""
+          for i in $(seq 1 60); do
+            sleep 5
+            STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/status/$TASK_ID" \
+              -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "ERR")
+            echo "  [$((i*5))s] $STATUS"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              FINAL="$STATUS"
+              break
+            fi
+          done
+          if [ "$FINAL" != "completed" ]; then
+            echo "❌ FAIL — full mode: $FINAL (300s 内未 completed — 查 Worker crash/内存)" | tee -a /tmp/results.md
+            echo "fullmode" >> /tmp/fails.txt
+            exit 0
+          fi
+          # 拉取 report 检查 Phase1/2 字数 + 排版
+          REPORT=$(curl -sf --max-time 15 "${{ env.PROD_URL }}/api/v1/bazi/report/$TASK_ID" \
+            -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "{}")
+          MD=$(echo "$REPORT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('markdown',''))" 2>/dev/null || echo "")
+          MD_LEN=${#MD}
+          echo "  report markdown: $MD_LEN chars"
+          # 检查字数 (Phase1+Phase2 合计应 > 2000 字符)
+          if [ "$MD_LEN" -lt 2000 ]; then
+            echo "❌ FAIL — full mode report: $MD_LEN chars (< 2000, Phase1/2 产出不足)" | tee -a /tmp/results.md
+            echo "fullmode_report" >> /tmp/fails.txt
+            exit 0
+          fi
+          # 检查排版: 无连续 ~~ (删除线损坏) + 无连续 ??? (乱码)
+          if echo "$MD" | grep -qE '~{3,}|\?{5,}'; then
+            echo "❌ FAIL — full mode report: 排版损坏 (含 ~~~ 或 ?????)" | tee -a /tmp/results.md
+            echo "fullmode_format" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "✅ PASS — full mode: completed ($((i*5))s), report $MD_LEN chars, 排版正常" | tee -a /tmp/results.md
+          echo "full_task_id=$TASK_ID" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # Check 7: 3 大按钮之双人合盘 (P0) — synastry/analyze
+      # ============================================================
+      - name: Check 7 — 双人合盘 (P0)
+        id: synastry
+        continue-on-error: true
+        run: |
+          echo "▸ Check 7: 3 大按钮之双人合盘..."
+          TOKEN="${{ steps.login.outputs.token }}"
+          if [ -z "$TOKEN" ]; then
+            echo "⏭️ SKIP — login failed" | tee -a /tmp/results.md
+            exit 0
+          fi
+          RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/synastry/analyze" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"partner1":{"name":"甲方","birthTime":"1990-01-01 12:00","gender":"男","location":"北京"},"partner2":{"name":"乙方","birthTime":"1992-03-15 18:30","gender":"女","location":"上海"},"mode":"full"}' 2>&1 || echo "CURL_FAILED")
+          TASK_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
+          if [ -z "$TASK_ID" ]; then
+            echo "❌ FAIL — synastry submit: no task_id ($RESP)" | tee -a /tmp/results.md
+            echo "synastry" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  task_id: $TASK_ID"
+          FINAL=""
+          for i in $(seq 1 60); do
+            sleep 5
+            STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/status/$TASK_ID" \
+              -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "ERR")
+            echo "  [$((i*5))s] $STATUS"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              FINAL="$STATUS"
+              break
+            fi
+          done
+          if [ "$FINAL" = "completed" ]; then
+            echo "✅ PASS — synastry: completed ($((i*5))s)" | tee -a /tmp/results.md
           else
-            echo "❌ FAIL — shenji: 无实质回答 ($RESP)" | tee -a /tmp/results.md
+            echo "❌ FAIL — synastry: $FINAL (300s 内未 completed — 查 Worker/heqi agent)" | tee -a /tmp/results.md
+            echo "synastry" >> /tmp/fails.txt
+          fi
+
+      # ============================================================
+      # Check 8: 神机追问 (P1) — plugin/career + 户口本 has_data
+      # ============================================================
+      - name: Check 8 — 神机追问 (career plugin + 户口本) (P1)
+        id: shenji
+        if: env.TEST_SUITE == 'worker' || env.TEST_SUITE == 'knowledge' || env.TEST_SUITE == 'core'
+        continue-on-error: true
+        run: |
+          echo "▸ Check 8: 神机追问 (career plugin + 八字户口本)..."
+          TOKEN="${{ steps.login.outputs.token }}"
+          if [ -z "$TOKEN" ]; then
+            echo "⏭️ SKIP — login failed" | tee -a /tmp/results.md
+            exit 0
+          fi
+          # 8a: 检查户口本 has_data
+          CORE_RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/core" \
+            -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "{}")
+          HAS_DATA=$(echo "$CORE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('has_data', False))" 2>/dev/null || echo "False")
+          echo "  户口本 has_data: $HAS_DATA"
+          if [ "$HAS_DATA" != "True" ]; then
+            echo "⚠️ WARN — 户口本 has_data=False (profile_loader 未注入, 不阻塞但需关注)" | tee -a /tmp/results.md
+          fi
+          # 8b: 用 Check 5 的 task_id 调 career plugin
+          PARENT_TASK="${{ steps.lightweight.outputs.lightweight_task_id }}"
+          if [ -z "$PARENT_TASK" ]; then
+            echo "⏭️ SKIP — lightweight task 未完成, 无法测 plugin" | tee -a /tmp/results.md
+            exit 0
+          fi
+          RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/bazi/plugin/career" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"task_id\":\"$PARENT_TASK\"}" 2>&1 || echo "CURL_FAILED")
+          PLUGIN_TASK_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('plugin_task_id',''))" 2>/dev/null || echo "")
+          if [ -z "$PLUGIN_TASK_ID" ]; then
+            echo "❌ FAIL — career plugin submit: no plugin_task_id ($RESP)" | tee -a /tmp/results.md
+            echo "shenji" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  plugin_task_id: $PLUGIN_TASK_ID"
+          FINAL=""
+          for i in $(seq 1 24); do
+            sleep 5
+            STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugin/status/$PLUGIN_TASK_ID" \
+              -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "ERR")
+            echo "  [$((i*5))s] $STATUS"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              FINAL="$STATUS"
+              break
+            fi
+          done
+          if [ "$FINAL" = "completed" ]; then
+            echo "✅ PASS — career plugin: completed ($((i*5))s), 户口本: $HAS_DATA" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — career plugin: $FINAL (120s 内未 completed)" | tee -a /tmp/results.md
             echo "shenji" >> /tmp/fails.txt
           fi
 
-      - name: Check 7 — 中医库 (if test_suite=worker)
-        if: inputs.test_suite == 'worker'
+      # ============================================================
+      # Check 9: 中医库 (P1) — plugin/health + 古籍关键词 (RAG 起作用)
+      # ============================================================
+      - name: Check 9 — 中医库 (health plugin + RAG 古籍) (P1)
+        id: tcm
+        if: env.TEST_SUITE == 'worker' || env.TEST_SUITE == 'core'
         continue-on-error: true
         run: |
-          echo "▸ Check 7: 中医库 (test_suite=worker)..."
-          # 中医库是 14 plugins 之一, 检查 plugins 列表中是否有中医相关
-          RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugins" 2>/dev/null || echo "[]")
-          TCM_FOUND=$(echo "$RESP" | python3 -c "
-          import sys, json
-          plugins = json.load(sys.stdin)
-          tcm = [p for p in plugins if '中医' in p.get('name','') or 'tcm' in p.get('id','').lower() or '药' in p.get('name','')]
-          print('yes' if tcm else 'no')
-          " 2>/dev/null || echo "err")
-          if [ "$TCM_FOUND" = "yes" ]; then
-            echo "✅ PASS — tcm: 中医库 plugin 存在" | tee -a /tmp/results.md
-          else
-            echo "❌ FAIL — tcm: 中医库 plugin 未找到 ($TCM_FOUND)" | tee -a /tmp/results.md
+          echo "▸ Check 9: 中医库 (health plugin + RAG 古籍关键词)..."
+          TOKEN="${{ steps.login.outputs.token }}"
+          if [ -z "$TOKEN" ]; then
+            echo "⏭️ SKIP — login failed" | tee -a /tmp/results.md
+            exit 0
+          fi
+          PARENT_TASK="${{ steps.lightweight.outputs.lightweight_task_id }}"
+          if [ -z "$PARENT_TASK" ]; then
+            echo "⏭️ SKIP — lightweight task 未完成" | tee -a /tmp/results.md
+            exit 0
+          fi
+          RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/bazi/plugin/health" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"task_id\":\"$PARENT_TASK\"}" 2>&1 || echo "CURL_FAILED")
+          PLUGIN_TASK_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('plugin_task_id',''))" 2>/dev/null || echo "")
+          if [ -z "$PLUGIN_TASK_ID" ]; then
+            echo "❌ FAIL — health plugin submit: no plugin_task_id ($RESP)" | tee -a /tmp/results.md
             echo "tcm" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  plugin_task_id: $PLUGIN_TASK_ID"
+          FINAL=""
+          for i in $(seq 1 24); do
+            sleep 5
+            STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugin/status/$PLUGIN_TASK_ID" \
+              -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "ERR")
+            echo "  [$((i*5))s] $STATUS"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              FINAL="$STATUS"
+              break
+            fi
+          done
+          if [ "$FINAL" != "completed" ]; then
+            echo "❌ FAIL — health plugin: $FINAL (120s 内未 completed)" | tee -a /tmp/results.md
+            echo "tcm" >> /tmp/fails.txt
+            exit 0
+          fi
+          # 检查 RAG 古籍关键词 (TCM 按需注入, demo 用户可能不触发, 只 WARN 不 FAIL)
+          REPORT=$(curl -sf --max-time 15 "${{ env.PROD_URL }}/api/v1/bazi/report/$PARENT_TASK" \
+            -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "{}")
+          MD=$(echo "$REPORT" | python3 -c "import sys,json; d=json.load(sys.stdin); po=d.get('plugin_outputs',{}); print(po.get('health','') if isinstance(po,dict) else '')" 2>/dev/null || echo "")
+          if echo "$MD" | grep -qE "中医|TCM|古籍|黄帝内经|本草"; then
+            echo "✅ PASS — health plugin: completed, RAG 古籍命中" | tee -a /tmp/results.md
+          else
+            echo "✅ PASS — health plugin: completed (RAG 古籍未命中, demo 用户可能无 A/B 级风险, 非阻塞)" | tee -a /tmp/results.md
           fi
 
+      # ============================================================
+      # Check 10: 历史记录 Phase1/2 产出 (P0) — report 字数 + 无乱码
+      # ============================================================
+      - name: Check 10 — 历史记录 Phase1/2 产出 (P0)
+        continue-on-error: true
+        run: |
+          echo "▸ Check 10: 历史记录 Phase1/2 产出 (字数 + 排版)..."
+          TOKEN="${{ steps.login.outputs.token }}"
+          if [ -z "$TOKEN" ]; then
+            echo "⏭️ SKIP — login failed" | tee -a /tmp/results.md
+            exit 0
+          fi
+          # 拉历史
+          HISTORY=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/history" \
+            -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "[]")
+          COMPLETED_TASK=$(echo "$HISTORY" | python3 -c "
+          import sys,json
+          d=json.load(sys.stdin)
+          for t in d:
+              if t.get('status')=='completed':
+                  print(t['task_id']); break
+          " 2>/dev/null || echo "")
+          if [ -z "$COMPLETED_TASK" ]; then
+            echo "❌ FAIL — 历史记录无 completed task" | tee -a /tmp/results.md
+            echo "history" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  最近 completed task: $COMPLETED_TASK"
+          # 拉 report 检查 Phase1/2
+          REPORT=$(curl -sf --max-time 15 "${{ env.PROD_URL }}/api/v1/bazi/report/$COMPLETED_TASK" \
+            -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "{}")
+          MD=$(echo "$REPORT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('markdown',''))" 2>/dev/null || echo "")
+          MD_LEN=${#MD}
+          echo "  report markdown: $MD_LEN chars"
+          if [ "$MD_LEN" -lt 1000 ]; then
+            echo "❌ FAIL — 历史 report: $MD_LEN chars (< 1000, Phase1/2 产出不足)" | tee -a /tmp/results.md
+            echo "history_report" >> /tmp/fails.txt
+            exit 0
+          fi
+          # 检查排版: 无连续 ~~ (删除线损坏) + 无连续 ??? (乱码)
+          if echo "$MD" | grep -qE '~{3,}|\?{5,}'; then
+            echo "❌ FAIL — 历史 report 排版损坏 (含 ~~~ 或 ?????)" | tee -a /tmp/results.md
+            echo "history_format" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "✅ PASS — 历史 report: $MD_LEN chars, 排版正常" | tee -a /tmp/results.md
+
+      # ============================================================
+      # Aggregate + Create Issue on failure
+      # ============================================================
       - name: Aggregate fails
         if: always()
         run: |
           ALL_FAILS=$(tr '\n' ' ' < /tmp/fails.txt | tr -s ' ' | sed 's/^ //;s/ $//')
           echo "ALL_FAILS=$ALL_FAILS" >> $GITHUB_ENV
           PRIORITY="P1"
-          if echo "$ALL_FAILS" | grep -qE "health|frontend|login"; then
+          if echo "$ALL_FAILS" | grep -qE "health|frontend|login|fullmode|synastry|history"; then
             PRIORITY="P0"
           fi
           echo "PRIORITY=$PRIORITY" >> $GITHUB_ENV
@@ -254,20 +490,21 @@ jobs:
             const prNumber = process.env.PR_NUMBER || 'N/A';
             const deployNote = process.env.DEPLOY_NOTE || 'N/A';
             const date = new Date().toISOString().slice(0,19).replace('T',' ');
-            const title = `[Post-Deploy Verify] ${priority} FAILED — ${date} — ${fails}`;
-            const body = `## 🚨 bazi 线上部署验收失败
+            const title = `[Post-Deploy Verify V2] ${priority} FAILED — ${date} — ${fails}`;
+            const body = `## 🚨 bazi 线上部署验收失败 (V2 — 10 项全自动)
 
             ${results}
 
             ---
+
             ## 修复指引
 
             @trae 请进场修复, 步骤:
             1. 读 [V10.8_Bug修复经验_DS.md](https://github.com/clawang2433-commits/bazi/blob/main/docs/specs/2026-07-11_v10.8_specs/V10.8_Bug修复经验_DS.md) 找类似 bug
             2. 读 [Deploy.md 已知坑清单](https://github.com/clawang2433-commits/bazi/blob/main/docs/deployment/Deploy.md) 对照症状
             3. 本地复现 → 修复 → pytest 过 → 开 PR (bazi repo)
-            4. 开 PR 后 GitHub Action 会自动通知 @codewhale review (auto-trigger-review.yml)
-            5. CW=DS review + merge → Leo 再部署 → 验收自动跑 (bazi push main → repository_dispatch)
+            4. 开 PR 后 GitHub Action 会自动通知 @codewhale review
+            5. CW review + merge → Leo 再部署 → 验收自动跑
 
             ## 失败项分析
 
@@ -277,7 +514,12 @@ jobs:
             | frontend(P0) | Next.js 挂了或 nginx 502 | \`curl -I https://xiantianyiqi.cn/\` + \`ssh pm2 logs bazi-web\` |
             | login(P0) | 数据库挂或 JWT 密钥错 | \`ssh pm2 logs bazi-api --lines 50 \| grep -i error\` |
             | plugins(P1) | Agent 加载失败 | \`ssh pm2 logs bazi-api --lines 50 \| grep -i plugin\` |
-            | paipan(P1) | Worker crash / OOM / LLM 超时 | \`ssh pm2 logs bazi-worker --lines 50 \| grep -iE 'error\|crash\|oom'\` |
+            | lightweight(P1) | Worker crash / mode=lightweight | \`ssh pm2 logs bazi-worker --lines 50 \| grep -iE 'error\|crash'\` |
+            | fullmode(P0) | Worker crash / OOM / LLM 超时 / aiosqlite | \`ssh pm2 logs bazi-worker --lines 100 \| grep -iE 'error\|crash\|oom\|aiosqlite'\` |
+            | synastry(P0) | heqi agent 失败 / 合盘 LLM 超时 | \`ssh pm2 logs bazi-worker --lines 100 \| grep -iE 'heqi\|synastry'\` |
+            | shenji(P1) | plugin worker 失败 / 户口本未注入 | \`ssh pm2 logs bazi-worker --lines 50 \| grep -iE 'plugin\|profile'\` |
+            | tcm(P1) | health plugin 失败 / TCM 注入失败 | \`ssh pm2 logs bazi-worker --lines 50 \| grep -iE 'health\|tcm'\` |
+            | history(P0) | 历史记录无数据 / report 字段缺失 | \`curl /api/v1/bazi/history\` + 查 DB tasks 表 |
 
             ## 服务器诊断命令
             \`\`\`bash
@@ -287,6 +529,7 @@ jobs:
             ---
             - **bazi PR deployed**: #${prNumber}
             - **Deploy note**: ${deployNote}
+            - **test_suite**: ${{ env.TEST_SUITE }}
             - **Triggered by**: ${{ github.actor }} via ${{ github.event_name }}
             - **Workflow run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             `;
@@ -303,6 +546,7 @@ jobs:
         run: |
           echo ""
           echo "╔══════════════════════════════════════════════╗"
-          echo "║  ✅ 部署验收通过 — 线上健康, 可通知团队         ║"
+          echo "║  ✅ 部署验收通过 (V2 — 10 项全自动)            ║"
+          echo "║  线上健康, 3 大按钮 + 神机 + 中医库 + 历史全过  ║"
           echo "╚══════════════════════════════════════════════╝"
           cat /tmp/results.md
