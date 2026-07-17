@@ -1,0 +1,223 @@
+name: Post-Deploy Verify
+
+# ============================================================================
+# 位置: clawang2433-commits/issues (PUBLIC repo, GitHub Actions 无限免费)
+# 用途: Leo 部署 bazi 后手动触发, 自动验证线上健康, 失败自动开 Issue
+# 为什么放这里: public repo 无限免费, private repo (bazi) 只有 2000 分钟/月
+# 驱动协作: 失败 → 自动开 Issue (bug + P0/P1 + deploy-failed) → Trae 用
+#           bash scripts/agent-inbox.sh trae 查到 → 进场修复
+# 触发: workflow_dispatch (Leo 在 issues repo Actions tab 点 "Run workflow")
+#       或 gh workflow run post-deploy-verify.yml --repo clawang2433-commits/issues
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: '刚部署的 bazi PR # (填了会在 Issue 里关联)'
+        required: false
+        type: string
+      deploy_note:
+        description: '部署备注 (如: PR#84+#85 反复 bug 根治)'
+        required: false
+        type: string
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  PROD_URL: https://xiantianyiqi.cn
+  TEST_USER: demo
+  TEST_PASS: demo123
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Init results
+        run: |
+          echo "## Post-Deploy Verify Results" > /tmp/results.md
+          echo "" >> /tmp/results.md
+          echo "- **Time**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> /tmp/results.md
+          echo "- **bazi PR**: ${{ inputs.pr_number || 'N/A' }}" >> /tmp/results.md
+          echo "- **Note**: ${{ inputs.deploy_note || 'N/A' }}" >> /tmp/results.md
+          echo "- **Triggered by**: ${{ github.actor }}" >> /tmp/results.md
+          echo "" >> /tmp/results.md
+          echo "### Checks" >> /tmp/results.md
+          echo "" >> /tmp/results.md
+          : > /tmp/fails.txt
+
+      - name: Check 1 — Health (P0)
+        continue-on-error: true
+        run: |
+          echo "▸ Check 1: Health..."
+          RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/health" 2>&1 || echo "CURL_FAILED")
+          echo "  Response: $RESP"
+          if echo "$RESP" | grep -q '"status":"ok"'; then
+            echo "✅ PASS — health: ok" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — health: $RESP" | tee -a /tmp/results.md
+            echo "health" >> /tmp/fails.txt
+          fi
+
+      - name: Check 2 — 14 Plugins (P1)
+        continue-on-error: true
+        run: |
+          echo "▸ Check 2: 14 Plugins..."
+          RESP=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugins" 2>&1 || echo "CURL_FAILED")
+          COUNT=$(echo "$RESP" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+          echo "  Plugin count: $COUNT"
+          if [ "$COUNT" -eq 14 ]; then
+            echo "✅ PASS — 14 plugins" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — plugins: $COUNT (expected 14)" | tee -a /tmp/results.md
+            echo "plugins" >> /tmp/fails.txt
+          fi
+
+      - name: Check 3 — Frontend (P0)
+        continue-on-error: true
+        run: |
+          echo "▸ Check 3: Frontend..."
+          CODE=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 10 "${{ env.PROD_URL }}/" 2>&1 || echo "000")
+          echo "  HTTP code: $CODE"
+          if [ "$CODE" = "200" ]; then
+            echo "✅ PASS — frontend: 200" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — frontend: $CODE (expected 200)" | tee -a /tmp/results.md
+            echo "frontend" >> /tmp/fails.txt
+          fi
+
+      - name: Check 4 — Login (P0)
+        id: login
+        continue-on-error: true
+        run: |
+          echo "▸ Check 4: Login..."
+          RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/auth/login" \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ env.TEST_USER }}","password":"${{ env.TEST_PASS }}"}' 2>&1 || echo "CURL_FAILED")
+          TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
+          if [ -n "$TOKEN" ]; then
+            echo "✅ PASS — login: token ${#TOKEN} chars" | tee -a /tmp/results.md
+            echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          else
+            echo "❌ FAIL — login: no token ($RESP)" | tee -a /tmp/results.md
+            echo "login" >> /tmp/fails.txt
+          fi
+
+      - name: Check 5 — E2E Paipan (P1)
+        continue-on-error: true
+        run: |
+          echo "▸ Check 5: E2E Paipan..."
+          TOKEN="${{ steps.login.outputs.token }}"
+          if [ -z "$TOKEN" ]; then
+            echo "⏭️ SKIP — login failed, can't test paipan" | tee -a /tmp/results.md
+            exit 0
+          fi
+          RESP=$(curl -sf --max-time 15 -X POST "${{ env.PROD_URL }}/api/v1/bazi/analyze" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"deploy-verify","gender":"男","birth_time":"1990-01-01 12:00","location":"北京","mode":"lightweight"}' 2>&1 || echo "CURL_FAILED")
+          TASK_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
+          if [ -z "$TASK_ID" ]; then
+            echo "❌ FAIL — paipan submit: no task_id ($RESP)" | tee -a /tmp/results.md
+            echo "paipan" >> /tmp/fails.txt
+            exit 0
+          fi
+          echo "  task_id: $TASK_ID"
+          FINAL=""
+          for i in $(seq 1 24); do
+            sleep 5
+            STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/status/$TASK_ID" \
+              -H "Authorization: Bearer $TOKEN" 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "ERR")
+            echo "  [$((i*5))s] $STATUS"
+            if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+              FINAL="$STATUS"
+              break
+            fi
+          done
+          if [ "$FINAL" = "completed" ]; then
+            echo "✅ PASS — paipan: completed ($((i*5))s)" | tee -a /tmp/results.md
+          else
+            echo "❌ FAIL — paipan: $FINAL (120s 内未 completed — 查 Worker crash/内存)" | tee -a /tmp/results.md
+            echo "paipan" >> /tmp/fails.txt
+          fi
+
+      - name: Aggregate fails
+        if: always()
+        run: |
+          ALL_FAILS=$(tr '\n' ' ' < /tmp/fails.txt | tr -s ' ' | sed 's/^ //;s/ $//')
+          echo "ALL_FAILS=$ALL_FAILS" >> $GITHUB_ENV
+          PRIORITY="P1"
+          if echo "$ALL_FAILS" | grep -qE "health|frontend|login"; then
+            PRIORITY="P0"
+          fi
+          echo "PRIORITY=$PRIORITY" >> $GITHUB_ENV
+          echo "Aggregated fails: '$ALL_FAILS' priority: $PRIORITY"
+
+      - name: Create Issue on failure
+        if: always() && env.ALL_FAILS != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('/tmp/results.md', 'utf8');
+            const fails = process.env.ALL_FAILS.trim();
+            const priority = process.env.PRIORITY;
+            const prNumber = '${{ inputs.pr_number }}' || 'N/A';
+            const deployNote = '${{ inputs.deploy_note }}' || 'N/A';
+            const date = new Date().toISOString().slice(0,19).replace('T',' ');
+            const title = `[Post-Deploy Verify] ${priority} FAILED — ${date} — ${fails}`;
+            const body = `## 🚨 bazi 线上部署验收失败
+
+            ${results}
+
+            ---
+            ## 修复指引
+
+            @trae 请进场修复, 步骤:
+            1. 读 [V10.8_Bug修复经验_DS.md](https://github.com/clawang2433-commits/bazi/blob/main/docs/specs/2026-07-11_v10.8_specs/V10.8_Bug修复经验_DS.md) 找类似 bug
+            2. 读 [Deploy.md 已知坑清单](https://github.com/clawang2433-commits/bazi/blob/main/docs/deployment/Deploy.md) 对照症状
+            3. 本地复现 → 修复 → pytest 过 → 开 PR (bazi repo) → awaiting-review label
+            4. CW=DS review + merge → Leo 重新部署 → 重新触发本 Action 验证
+
+            ## 失败项分析
+
+            | 失败项 | 可能根因 | 查哪里 |
+            |:--|:--|:--|
+            | health(P0) | 后端完全挂了 | \`ssh root@47.243.141.8 "pm2 list && pm2 logs bazi-api --lines 20"\` |
+            | frontend(P0) | Next.js 挂了或 nginx 502 | \`curl -I https://xiantianyiqi.cn/\` + \`ssh pm2 logs bazi-web\` |
+            | login(P0) | 数据库挂或 JWT 密钥错 | \`ssh pm2 logs bazi-api --lines 50 \| grep -i error\` |
+            | plugins(P1) | Agent 加载失败 | \`ssh pm2 logs bazi-api --lines 50 \| grep -i plugin\` |
+            | paipan(P1) | Worker crash / OOM / LLM 超时 | \`ssh pm2 logs bazi-worker --lines 50 \| grep -iE 'error\|crash\|oom'\` |
+
+            ## 服务器诊断命令
+            \`\`\`bash
+            ssh root@47.243.141.8 "pm2 list && free -m && pm2 logs bazi-worker --lines 30 --nostream"
+            \`\`\`
+
+            ---
+            - **bazi PR deployed**: #${prNumber}
+            - **Deploy note**: ${deployNote}
+            - **Triggered by**: ${{ github.actor }}
+            - **Workflow run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            `;
+            const issue = await github.rest.issues.create({
+              ...context.repo,
+              title: title,
+              body: body,
+              labels: ['bazi', 'bug', priority.toLowerCase(), 'deploy-failed', 'v10.8']
+            });
+            console.log(`✅ Issue #${issue.data.number} created: ${issue.data.html_url}`);
+
+      - name: Success
+        if: always() && env.ALL_FAILS == ''
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════╗"
+          echo "║  ✅ 部署验收通过 — 线上健康, 可通知团队         ║"
+          echo "╚══════════════════════════════════════════════╝"
+          cat /tmp/results.md
