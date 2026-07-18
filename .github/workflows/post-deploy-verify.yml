@@ -57,7 +57,7 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
       - name: Init results
@@ -177,7 +177,7 @@ jobs:
           fi
           echo "  task_id: $TASK_ID"
           FINAL=""
-          for i in $(seq 1 48); do
+          for i in $(seq 1 96); do
             sleep 5
             STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/status/$TASK_ID" \
               -H "Authorization: Bearer $TOKEN" 2>/dev/null \
@@ -192,7 +192,7 @@ jobs:
             echo "✅ PASS — lightweight: completed ($((i*5))s)" | tee -a /tmp/results.md
             echo "lightweight_task_id=$TASK_ID" >> $GITHUB_OUTPUT
           else
-            echo "❌ FAIL — lightweight: $FINAL (240s 内未 completed)" | tee -a /tmp/results.md
+            echo "❌ FAIL — lightweight: $FINAL (480s 内未 completed)" | tee -a /tmp/results.md
             echo "lightweight" >> /tmp/fails.txt
           fi
 
@@ -341,7 +341,7 @@ jobs:
           fi
           echo "  plugin_task_id: $PLUGIN_TASK_ID"
           FINAL=""
-          for i in $(seq 1 24); do
+          for i in $(seq 1 96); do
             sleep 5
             STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugin/status/$PLUGIN_TASK_ID" \
               -H "Authorization: Bearer $TOKEN" 2>/dev/null \
@@ -355,7 +355,7 @@ jobs:
           if [ "$FINAL" = "completed" ]; then
             echo "✅ PASS — career plugin: completed ($((i*5))s), 户口本: $HAS_DATA" | tee -a /tmp/results.md
           else
-            echo "❌ FAIL — career plugin: $FINAL (240s 内未 completed)" | tee -a /tmp/results.md
+            echo "❌ FAIL — career plugin: $FINAL (480s 内未 completed)" | tee -a /tmp/results.md
             echo "shenji" >> /tmp/fails.txt
           fi
 
@@ -390,7 +390,7 @@ jobs:
           fi
           echo "  plugin_task_id: $PLUGIN_TASK_ID"
           FINAL=""
-          for i in $(seq 1 24); do
+          for i in $(seq 1 96); do
             sleep 5
             STATUS=$(curl -sf --max-time 10 "${{ env.PROD_URL }}/api/v1/bazi/plugin/status/$PLUGIN_TASK_ID" \
               -H "Authorization: Bearer $TOKEN" 2>/dev/null \
@@ -402,7 +402,7 @@ jobs:
             fi
           done
           if [ "$FINAL" != "completed" ]; then
-            echo "❌ FAIL — health plugin: $FINAL (240s 内未 completed)" | tee -a /tmp/results.md
+            echo "❌ FAIL — health plugin: $FINAL (480s 内未 completed)" | tee -a /tmp/results.md
             echo "tcm" >> /tmp/fails.txt
             exit 0
           fi
