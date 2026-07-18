@@ -1,0 +1,229 @@
+# Bug Routing Rules — SSOT (Single Source of Truth)
+#
+# 所有 Agent (Trae/ZCode/CW/AG/DS) 和 GitHub Actions 必须遵循本规则。
+# 本文件为公开仓库 (clawang2433-commits/issues) 下的 SSOT,
+# bazi 私有仓库的 .github/workflows/bug-routing.yml 会读取本规则执行。
+#
+# 修改本文件请通过 PR, 不要直接 push main。
+
+# ============================================================
+# 仓库映射
+# ============================================================
+repositories:
+  issues_repo:
+    name: clawang2433-commits/issues
+    visibility: public
+    role: bug 追踪 + 规则 SSOT (本仓库)
+    allowed_contents:
+      - issues
+      - bug 文档 (Markdown)
+      - 规则 YAML (本文件)
+      - GitHub Actions workflow
+    forbidden_contents:
+      - 任何源代码 (.py/.ts/.js/.go 等)
+      - 任何密钥/配置文件 (.env/openclaw.json)
+
+  code_repos:
+    - name: clawang2433-commits/bazi
+      visibility: private
+      role: Bazi 项目代码仓库 (PR/代码审查/CI)
+      issue_policy:禁止创建 issue (由 workflow 自动转移)
+      allowed_contents:
+        - 源代码
+        - GitHub Actions workflow
+        - 测试代码
+        - 文档 (specs/deployment)
+
+# ============================================================
+# 标签体系 (跨 repo 统一)
+# ============================================================
+labels:
+  # 项目标签 (必选, 每个 issue 必须有且只有一个)
+  project:
+    - name: bazi
+      color: 5319e7
+      description: Bazi 八字排盘系统
+
+  # 类型标签 (必选, 每个 issue 必须有且只有一个)
+  type:
+    - name: bug
+      color: d73a4a
+      description: 功能错误/崩溃/异常
+    - name: improvement
+      color: a2eeef
+      description: 现有功能优化
+    - name: feature
+      color: 84b6eb
+      description: 新功能需求
+    - name: documentation
+      color: 0075ca
+      description: 文档问题
+    - name: question
+      color: d876e3
+      description: 疑问/讨论
+
+  # 优先级标签 (必选, 每个 issue 必须有且只有一个)
+  priority:
+    - name: P0
+      color: b60205
+      description: Critical — 阻塞核心功能/线上故障
+    - name: P1
+      color: d93f0b
+      description: High — 影响重要功能, 有 workaround
+    - name: P2
+      color: fbcA04
+      description: Medium — 不影响核心功能
+
+  # 版本标签 (可选, 多个)
+  version:
+    - name: v10.8
+      color: 1d76db
+      description: V10.8 版本
+    - name: v10.9
+      color: 1d76db
+      description: V10.9 版本
+
+  # 流程标签 (自动管理, 不要手动添加)
+  process:
+    - name: bug-index
+      color: c5def5
+      description: Bug 索引归档 (自动)
+    - name: notified
+      color: fbca04
+      description: 已通知 Agent 处理
+    - name: deploy-failed
+      color: b60205
+      description: 部署后 smoke test 失败
+
+# ============================================================
+# 触发关键词 (用于自动识别 bug 修复 commit)
+# ============================================================
+trigger_keywords:
+  # commit message 含以下关键词 → 触发自动建 issue
+  bug_fix:
+    - pattern: '\[bug\s*\d+\]'
+      case_insensitive: true
+    - pattern: 'bug\s+\d+'
+      case_insensitive: true
+    - pattern: 'fix\s+#\d+'
+      case_insensitive: true
+    - pattern: '修复\s*bug'
+    - pattern: 'fix\s+bug'
+      case_insensitive: true
+    - pattern: 'rootcause:'
+      case_insensitive: true
+
+  # commit message 含以下关键词 → 触发自动关闭 issue
+  close_issue:
+    - pattern: '(close[ds]?|fixe[ds]?|resolve[ds]?)\s+#(\d+)'
+      case_insensitive: true
+    - pattern: '修复\s+#(\d+)'
+
+# ============================================================
+# 创建规则
+# ============================================================
+creation_rules:
+  # 规则 1: commit message 含 bug 关键词 → 自动建 issue
+  - trigger: push_to_code_repo
+    condition: commit_message_matches_trigger_keywords
+    action: create_issue_in_issues_repo
+    title_template: "[Auto] {commit_subject}"
+    body_template: |
+      ## 自动创建 from commit {commit_hash}
+
+      ### Commit Message
+      {commit_message}
+
+      ### 修改文件
+      ```
+      {changed_files}
+      ```
+
+      ### Root Cause
+      {root_cause_from_commit_message}
+
+      ---
+      _此 Issue 由 bug-routing.yml workflow 自动创建, 如需补充请手动编辑_
+    labels: [bazi, bug, v10.8]
+    skip_if:
+      - commit_message_already_references_issue  # 已有 #N 引用则跳过
+
+  # 规则 2: bazi repo 误建 issue → 自动转移到 issues repo
+  - trigger: issue_opened_in_code_repo
+    condition: code_repo_issue_policy_is_forbidden
+    action: transfer_issue
+    target_repo: clawang2433-commits/issues
+    close_original: true
+    comment_on_original: |
+      ⚠️ 本仓库 (bazi) 不接受 issue, 已自动转移到
+      clawang2433-commits/issues#{new_issue_number}
+
+      请到 issues repo 跟踪: https://github.com/clawang2433-commits/issues/issues/{new_issue_number}
+    labels_inherited: true
+
+# ============================================================
+# 关闭规则
+# ============================================================
+close_rules:
+  # 规则 1: commit message 含 "fixes #N" → 关闭 issues repo 的 #N
+  - trigger: push_to_code_repo
+    condition: commit_message_matches_close_keywords
+    action: close_issue_in_issues_repo
+    comment: "✅ 修复 commit: {commit_hash}\n\n{commit_message}"
+    reason: completed
+
+# ============================================================
+# 例外情况 (不要自动创建 issue)
+# ============================================================
+exceptions:
+  - description: 纯文档/配置修改不含 bug 关键词
+    skip_if: changed_files_only_match ['*.md', '*.yml', '*.yaml', '*.json']
+    and: commit_message_not_match_trigger_keywords
+
+  - description: 测试代码修改
+    skip_if: changed_files_only_match ['tests/*', '*.test.*']
+
+  - description: merge commit
+    skip_if: is_merge_commit
+
+# ============================================================
+# Agent 行为约束 (软规范, 靠 workflow 兜底)
+# ============================================================
+agent_rules:
+  - id: R1
+    rule: Agent 创建 bug issue 必须用 gh issue create --repo clawang2433-commits/issues
+    enforcement: workflow 监听 bazi repo issue 事件, 误建的自动转移
+
+  - id: R2
+    rule: Agent 修复 bug 后必须在 commit message 末尾加 RootCause: 字段
+    enforcement: husky commit-msg hook 拦截 (bazi repo)
+
+  - id: R3
+    rule: Agent 修复 bug 后必须创建 issue (即使 commit message 不含 bug 关键词)
+    enforcement: workflow 监听 push 事件, 含 RootCause 字段也触发建 issue
+
+  - id: R4
+    rule: Agent 关闭 issue 必须用 commit message "fixes #N" 或 gh issue close
+    enforcement: workflow 监听 push 事件自动关闭
+
+  - id: R5
+    rule: 不要在 bazi repo 创建任何 issue
+    enforcement: workflow 监听 bazi repo issue opened 事件, 自动转移+关闭
+
+# ============================================================
+# 验证 (CI 闸门)
+# ============================================================
+verification:
+  # bazi repo 的 SSOT 一致性测试
+  - name: bug-routing-rules-yaml-integrity
+    description: 检查本 YAML 文件语法正确
+    run_in: issues_repo
+    command: python3 -c "import yaml; yaml.safe_load(open('bug-routing-rules.yml'))"
+
+  # bazi repo 的 issue 计数检查
+  - name: bazi-repo-no-open-issues
+    description: bazi repo 不应有 open issue (都应转移到 issues repo)
+    run_in: bazi_repo
+    command: |
+      COUNT=$(gh issue list --repo clawang2433-commits/bazi --state open --limit 1 | wc -l)
+      test "$COUNT" -eq 0 || exit 1
