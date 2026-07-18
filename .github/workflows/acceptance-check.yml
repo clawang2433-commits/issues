@@ -1,0 +1,181 @@
+name: Acceptance Check (G31)
+
+# ============================================================================
+# V10.9 G31: 验收清单自动化 — 定时 + 手动触发
+# 放在 issues repo (public, Actions 无限额度)
+#
+# 触发:
+#   1. 每周一 03:00 (北京时间) 自动跑 — cron: '0 19 * * 0' (UTC 19:00 = 北京 03:00)
+#   2. 手动 workflow_dispatch (输入版本号)
+#
+# 运行位置: GitHub Actions ubuntu-latest (不占 Mac mini / 生产服务器)
+#   - checkout bazi repo (private) 用 BAZI_REPO_PAT secret
+#   - 纯代码检查 (grep/ls/pytest/flake8/semgrep) → runner 本地
+#   - HTTP 检查 (curl 生产 URL) → 从 runner curl https://xiantianyiqi.cn
+#   - SSH 检查 (§一/§十) → 需要 SSH_PRIVATE_KEY secret, 无则 SKIP
+#
+# 失败处理:
+#   - 在 issues repo (本 repo) 开 issue, label: bug + acceptance-failed
+#   - 上传 markdown 报告 artifact (30 天保留)
+#
+# 前置配置 (Leo 需做):
+#   1. 创建 PAT (Settings → Developer settings → PAT classic), 勾选 repo:read
+#   2. 在 issues repo Settings → Secrets → Actions 添加 BAZI_REPO_PAT
+#   3. (可选) 添加 SSH_PRIVATE_KEY 用于 §一/§十 SSH 检查
+# ============================================================================
+
+on:
+  schedule:
+    - cron: '0 19 * * 0'  # 每周一 UTC 19:00 = 北京时间周一 03:00
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '验收版本 (如 v10.8, v10.9)'
+        required: true
+        default: 'v10.8'
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout bazi repo (private, 用 PAT)
+        uses: actions/checkout@v4
+        with:
+          repository: clawang2433-commits/bazi
+          token: ${{ secrets.BAZI_REPO_PAT }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-asyncio flake8 semgrep jsonschema psutil
+
+      - name: Configure SSH (for §一/§十 checks)
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_KEY" ]; then
+            echo "ℹ️ 无 SSH_PRIVATE_KEY secret, §一/§十 将 SKIP"
+          else
+            mkdir -p ~/.ssh
+            echo "$SSH_KEY" > ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            ssh-keyscan -H 47.243.141.8 >> ~/.ssh/known_hosts 2>/dev/null || true
+            echo "✓ SSH key configured"
+          fi
+
+      - name: Run acceptance checks (G31)
+        id: run
+        env:
+          BAZI_JWT_SECRET: ci-acceptance-test-jwt-secret-placeholder-32bytes
+          KIMI_API_KEY: ci-placeholder
+          GLM_API_KEY: ci-placeholder
+          DEEPSEEK_API_KEY: ci-placeholder
+          DOUBAO_API_KEY: ci-placeholder
+          VOLCENGINE_API_KEY: ci-placeholder
+          EMBEDDING_PROVIDER: disabled
+          RERANKER_PROVIDER: disabled
+          PROD_URL: https://xiantianyiqi.cn
+        run: |
+          VERSION="${{ github.event.inputs.version || 'v10.8' }}"
+          echo "📋 跑 $VERSION 验收清单..."
+          python3 scripts/run_acceptance.py \
+            --output acceptance-report-$VERSION.md \
+            2>&1 | tee acceptance-stdout.log || true
+          tail -3 acceptance-stdout.log || true
+
+      - name: Upload acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report-${{ github.event.inputs.version || 'v10.8' }}
+          path: |
+            acceptance-report-*.md
+            acceptance-stdout.log
+          retention-days: 30
+
+      - name: Parse result
+        id: parse
+        if: always()
+        run: |
+          REPORT=$(ls acceptance-report-*.md 2>/dev/null | head -1)
+          if [ -n "$REPORT" ]; then
+            PASS=$(grep -oP 'PASS\*\*\*: \K\d+' "$REPORT" || echo 0)
+            FAIL=$(grep -oP 'FAIL\*\*\*: \K\d+' "$REPORT" || echo 0)
+            SKIP=$(grep -oP 'SKIP\*\*\*: \K\d+' "$REPORT" || echo 0)
+            echo "pass=$PASS" >> $GITHUB_OUTPUT
+            echo "fail=$FAIL" >> $GITHUB_OUTPUT
+            echo "skip=$SKIP" >> $GITHUB_OUTPUT
+            echo "📊 PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
+          else
+            echo "pass=0" >> $GITHUB_OUTPUT
+            echo "fail=1" >> $GITHUB_OUTPUT
+            echo "skip=0" >> $GITHUB_OUTPUT
+            echo "❌ 报告文件未生成"
+          fi
+
+      - name: Notify on failure (开 issue, 本 repo)
+        if: steps.parse.outputs.fail != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = context.payload.inputs?.version || 'v10.8';
+            const pass = '${{ steps.parse.outputs.pass }}' || '0';
+            const fail = '${{ steps.parse.outputs.fail }}' || '0';
+            const skip = '${{ steps.parse.outputs.skip }}' || '0';
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            const body = [
+              `## 验收清单自动检查报告 — ${version}`,
+              ``,
+              `| 项 | 值 |`,
+              `|:--|:--|`,
+              `| 版本 | ${version} |`,
+              `| PASS | ${pass} |`,
+              `| FAIL | ${fail} |`,
+              `| SKIP | ${skip} |`,
+              `| 触发 | ${context.eventName === 'schedule' ? '定时 (每周一 03:00 北京时间)' : '手动'} |`,
+              `| Run | [查看详情](${runUrl}) |`,
+              `| 报告 | artifact: \`acceptance-report-${version}\` |`,
+              ``,
+              `### 失败项需修复`,
+              `1. 下载 artifact \`acceptance-report-${version}\` 查看 markdown 报告`,
+              `2. 找失败项 (❌) 的详情`,
+              `3. 在 bazi repo 开 PR 修复`,
+              `4. 修复后手动触发本 workflow 验证`,
+              ``,
+              `cd955`
+            ].join('\n');
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `📋 验收清单 ${version}: ${pass} PASS / ${fail} FAIL / ${skip} SKIP`,
+              body: body,
+              labels: ['bug', 'acceptance-failed', version]
+            });
+            console.log(`✅ Issue #${issue.data.number} created: ${issue.data.html_url}`);
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## G31 验收清单结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 项 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|:--|:--|" >> $GITHUB_STEP_SUMMARY
+          echo "| PASS | ${{ steps.parse.outputs.pass }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| FAIL | ${{ steps.parse.outputs.fail }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SKIP | ${{ steps.parse.outputs.skip }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "报告 artifact: \`acceptance-report-${{ github.event.inputs.version || 'v10.8' }\`" >> $GITHUB_STEP_SUMMARY
