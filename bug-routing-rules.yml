@@ -27,7 +27,7 @@ repositories:
     - name: clawang2433-commits/bazi
       visibility: private
       role: Bazi 项目代码仓库 (PR/代码审查/CI)
-      issue_policy:禁止创建 issue (由 workflow 自动转移)
+      issue_policy: 禁止创建 issue (由 workflow 自动转移)
       allowed_contents:
         - 源代码
         - GitHub Actions workflow
@@ -195,7 +195,7 @@ agent_rules:
     enforcement: workflow 监听 bazi repo issue 事件, 误建的自动转移
 
   - id: R2
-    rule: Agent 修复 bug 后必须在 commit message 末尾加 RootCause: 字段
+    rule: "Agent 修复 bug 后必须在 commit message 末尾加 RootCause: 字段"
     enforcement: husky commit-msg hook 拦截 (bazi repo)
 
   - id: R3
@@ -203,7 +203,7 @@ agent_rules:
     enforcement: workflow 监听 push 事件, 含 RootCause 字段也触发建 issue
 
   - id: R4
-    rule: Agent 关闭 issue 必须用 commit message "fixes #N" 或 gh issue close
+    rule: "Agent 关闭 issue 必须用 commit message \"fixes #N\" 或 gh issue close"
     enforcement: workflow 监听 push 事件自动关闭
 
   - id: R5
