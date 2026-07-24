@@ -1,9 +1,10 @@
 name: Agent Dispatch
 
-# 当 issue 被打上 qoder-task / zcode-task / codewhale-task label 时，自动发布结构化任务卡 comment
+# 当 issue 被打上 {agent}-task label 时，自动发布结构化任务卡 comment
+# 支持: qoder-task / zcode-task / codewhale-task / hermes-task
 # 并加 notified label 防重复。Agent 侧由 Leo 在对话窗手动触发 check inbox。
 # 通信模式: pull (GitHub Actions 格式化 + 防重复，agent 主动读取)
-# v3: 修复竞态重复 — 从 API 读当前 labels 而非 payload 快照 (2026-07-24)
+# v4: 新增 hermes-task (运维协调) + 清理旧 agent 支持 (2026-07-24)
 
 on:
   issues:
@@ -29,21 +30,23 @@ jobs:
             const issue = context.payload.issue;
             if (!issue) return;
 
-            // v3 关键修复: 从 API 获取当前 labels (非 payload 快照, 避免竞态)
+            // v3+ 关键: 从 API 获取当前 labels (非 payload 快照, 避免竞态)
             const { data: currentIssue } = await github.rest.issues.get({
               ...context.repo,
               issue_number: issue.number,
             });
             const labels = currentIssue.labels.map(l => l.name);
 
-            // 确定目标 agent (支持 qoder / zcode / codewhale 三通道)
+            // 确定目标 agent (4 通道: qoder / zcode / codewhale / hermes)
             let agent = null;
-            if (labels.includes('qoder-task')) agent = 'Qoder';
-            else if (labels.includes('zcode-task')) agent = 'ZCode';
-            else if (labels.includes('codewhale-task')) agent = 'CodeWhale';
+            let inboxCmd = '';
+            if (labels.includes('qoder-task')) { agent = 'Qoder'; inboxCmd = 'bash scripts/agent-inbox.sh qoder bazi'; }
+            else if (labels.includes('zcode-task')) { agent = 'ZCode'; inboxCmd = 'bash scripts/agent-inbox.sh zcode bazi'; }
+            else if (labels.includes('codewhale-task')) { agent = 'CodeWhale'; inboxCmd = 'bash scripts/agent-inbox.sh codewhale bazi'; }
+            else if (labels.includes('hermes-task')) { agent = 'Hermes'; inboxCmd = 'bash scripts/agent-inbox.sh hermes bazi'; }
             else return; // 不是 agent 任务，跳过
 
-            // 防重复：已有 notified label 则跳过 (从 API 读当前状态)
+            // 防重复：已有 notified label 则跳过
             if (labels.includes('notified')) {
               console.log(`Issue #${issue.number} already notified, skipping.`);
               return;
@@ -53,9 +56,11 @@ jobs:
             const priorityLabel = labels.find(l => /^P[0-2]$/.test(l));
             const priority = priorityLabel || 'P2';
 
-            // 提取版本
+            // 提取版本/项目
             const versionLabel = labels.find(l => l.startsWith('v10.') || l.startsWith('mobile'));
+            const projectLabel = labels.find(l => ['bazi','fengshui','oc_plus','video_bro'].includes(l));
             const version = versionLabel || 'v10.9';
+            const project = projectLabel || 'bazi';
 
             // 构建任务卡
             const taskCard = [
@@ -64,7 +69,8 @@ jobs:
               `| 字段 | 值 |`,
               `|:--|:--|`,
               `| 任务 | **${issue.title}** |`,
-              `| 优先级 | 🔴 ${priority} |`,
+              `| 优先级 | ${priority} |`,
+              `| 项目 | ${project} |`,
               `| 版本 | ${version} |`,
               `| 派发时间 | ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC |`,
               `| 状态 | 🟡 待接收 |`,
@@ -80,11 +86,11 @@ jobs:
               `gh issue view ${issue.number} --repo clawang2433-commits/issues`,
               '```',
               '',
-              `或: bash scripts/agent-inbox.sh ${agent.toLowerCase()} bazi`,
+              `或: ${inboxCmd}`,
               '',
               `**完成后**: 在本 issue comment 回复结果，然后关闭 issue 或等待 Leo 验收。`,
               '',
-              `*由 agent-dispatch.yml v3 自动生成 · ${new Date().toISOString().slice(0, 10)}*`,
+              `*由 agent-dispatch.yml v4 自动生成 · ${new Date().toISOString().slice(0, 10)}*`,
             ].join('\n');
 
             // 发布任务卡 comment
