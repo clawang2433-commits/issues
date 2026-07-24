@@ -1,0 +1,90 @@
+name: Agent Dispatch
+
+# 当 issue 被打上 qoder-task 或 zcode-task label 时，自动发布结构化任务卡 comment
+# 并加 notified label 防重复。Agent 侧由 Leo 在对话窗手动触发 check inbox。
+# 通信模式: pull (GitHub Actions 格式化 + 防重复，agent 主动读取)
+
+on:
+  issues:
+    types: [labeled, opened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check and dispatch task
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            if (!issue) return;
+
+            const labels = issue.labels.map(l => l.name);
+
+            // 确定目标 agent
+            let agent = null;
+            if (labels.includes('qoder-task')) agent = 'Qoder';
+            else if (labels.includes('zcode-task')) agent = 'ZCode';
+            else return; // 不是 agent 任务，跳过
+
+            // 防重复：已有 notified label 则跳过
+            if (labels.includes('notified')) {
+              console.log(`Issue #${issue.number} already notified, skipping.`);
+              return;
+            }
+
+            // 提取优先级
+            const priorityLabel = labels.find(l => /^P[0-2]$/.test(l));
+            const priority = priorityLabel || 'P2';
+
+            // 提取版本
+            const versionLabel = labels.find(l => l.startsWith('v10.') || l.startsWith('mobile'));
+            const version = versionLabel || 'v10.9';
+
+            // 构建任务卡
+            const taskCard = [
+              `## 📋 任务卡 — @${agent}`,
+              '',
+              `| 字段 | 值 |`,
+              `|:--|:--|`,
+              `| 任务 | **${issue.title}** |`,
+              `| 优先级 | 🔴 ${priority} |`,
+              `| 版本 | ${version} |`,
+              `| 派发时间 | ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC |`,
+              `| 状态 | 🟡 待接收 |`,
+              '',
+              '### 任务描述',
+              '',
+              issue.body ? issue.body.slice(0, 2000) : '(无描述)',
+              '',
+              '---',
+              '',
+              `**接收方式**: ${agent} 在对话窗执行:`,
+              '```bash',
+              `gh issue view ${issue.number} --repo clawang2433-commits/issues`,
+              '```',
+              '',
+              `**完成后**: 在本 issue comment 回复结果，然后关闭 issue 或等待 Leo 验收。`,
+              '',
+              `*由 agent-dispatch.yml 自动生成 · ${new Date().toISOString().slice(0, 10)}*`,
+            ].join('\n');
+
+            // 发布任务卡 comment
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: issue.number,
+              body: taskCard,
+            });
+
+            // 加 notified label 防重复
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: issue.number,
+              labels: ['notified'],
+            });
+
+            console.log(`Dispatched task card for issue #${issue.number} to ${agent}`);
