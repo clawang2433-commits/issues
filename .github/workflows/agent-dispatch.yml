@@ -1,8 +1,9 @@
 name: Agent Dispatch
 
-# 当 issue 被打上 qoder-task 或 zcode-task label 时，自动发布结构化任务卡 comment
+# 当 issue 被打上 qoder-task / zcode-task / codewhale-task label 时，自动发布结构化任务卡 comment
 # 并加 notified label 防重复。Agent 侧由 Leo 在对话窗手动触发 check inbox。
 # 通信模式: pull (GitHub Actions 格式化 + 防重复，agent 主动读取)
+# v2: 新增 codewhale-task 支持 (2026-07-24)
 
 on:
   issues:
@@ -30,10 +31,11 @@ jobs:
 
             const labels = issue.labels.map(l => l.name);
 
-            // 确定目标 agent
+            // 确定目标 agent (支持 qoder / zcode / codewhale 三通道)
             let agent = null;
             if (labels.includes('qoder-task')) agent = 'Qoder';
             else if (labels.includes('zcode-task')) agent = 'ZCode';
+            else if (labels.includes('codewhale-task')) agent = 'CodeWhale';
             else return; // 不是 agent 任务，跳过
 
             // 防重复：已有 notified label 则跳过
@@ -73,9 +75,11 @@ jobs:
               `gh issue view ${issue.number} --repo clawang2433-commits/issues`,
               '```',
               '',
+              `或: bash scripts/agent-inbox.sh ${agent.toLowerCase()} bazi`,
+              '',
               `**完成后**: 在本 issue comment 回复结果，然后关闭 issue 或等待 Leo 验收。`,
               '',
-              `*由 agent-dispatch.yml 自动生成 · ${new Date().toISOString().slice(0, 10)}*`,
+              `*由 agent-dispatch.yml v2 自动生成 · ${new Date().toISOString().slice(0, 10)}*`,
             ].join('\n');
 
             // 发布任务卡 comment
