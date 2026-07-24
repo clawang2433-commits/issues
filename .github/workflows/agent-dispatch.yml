@@ -12,6 +12,11 @@ permissions:
   issues: write
   contents: read
 
+# 串行化：同一 issue 的多次触发排队执行，避免竞态重复发任务卡
+concurrency:
+  group: agent-dispatch-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   dispatch:
     runs-on: ubuntu-latest
